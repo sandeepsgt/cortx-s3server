@@ -76,11 +76,13 @@ class S3PutMultipartCopyAction : public S3PutObjectActionBase {
   bool motr_write_in_progress = false;
   bool motr_write_completed = false;  // full object write
   bool write_failed = false;
+  bool is_range_copy = false;
 
   int part_number;
   std::string upload_id;
   size_t total_data_to_copy = 0;
   size_t source_object_size = 0;
+  std::vector<struct S3ExtendedObjectInfo> extended_objects;
 
   size_t first_byte_offset_to_copy = 0;
   size_t last_byte_offset_to_copy = 0;
@@ -125,13 +127,14 @@ class S3PutMultipartCopyAction : public S3PutObjectActionBase {
   void fetch_part_info();
   void fetch_part_info_success();
   void fetch_part_info_failed();
-  void create_part_object();
   void create_objects();
   void create_part();
   void create_part_object_successful();
   void create_part_object_failed();
   void initiate_part_copy();
   void copy_part_object();
+  void copy_multipart_source_object();
+  void set_range_read_from_source_multipart_object();
   bool copy_part_object_cb();
   void copy_part_object_success();
   void copy_part_object_failed();
