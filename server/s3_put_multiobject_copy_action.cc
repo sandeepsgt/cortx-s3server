@@ -474,12 +474,10 @@ void S3PutMultipartCopyAction::copy_multipart_source_object() {
 
   total_objects = additional_object_metadata->get_number_of_fragments();
 
-  s3_log(S3_LOG_DEBUG, request_id,
-         "Total fragements/parts to be copied : (%d)\n", total_objects);
   extended_obj = additional_object_metadata->get_extended_object_metadata();
   const std::map<int, std::vector<struct s3_part_frag_context>>& ext_entries =
       extended_obj->get_raw_extended_entries();
-  for (int i = 0; i < total_objects; i++) {
+  for (unsigned int i = 0; i < total_objects; i++) {
     int ext_entry_index = 0;
     const struct s3_part_frag_context& frag_info =
         (ext_entries.at(i + 1)).at(ext_entry_index);
@@ -515,10 +513,10 @@ void S3PutMultipartCopyAction::copy_multipart_source_object() {
     part_fragment_context_list.push_back(frag_info);
   }
   bool f_success = false;
-  if (is_range_copy) set_range_read_from_source_multipart_object()
+  if (is_range_copy) set_range_read_from_source_multipart_object();
   try {
     object_data_copier->copy_part_fragment_in_single_source(
-        part_fragment_context_list, extended_objects,
+        part_fragment_context_list, extended_objects, first_byte_offset_to_copy,
         std::bind(&S3PutMultipartCopyAction::copy_part_object_cb, this),
         std::bind(&S3PutMultipartCopyAction::copy_part_object_success, this),
         std::bind(&S3PutMultipartCopyAction::copy_part_object_failed, this),
@@ -542,142 +540,140 @@ void S3PutMultipartCopyAction::copy_multipart_source_object() {
 }
 
 void S3PutMultipartCopyAction::set_range_read_from_source_multipart_object() {
-  if ((first_byte_offset_to_copy == 0) &&
-      (last_byte_offset_to_copy == (content_length - 1))) {
-    // Number of blocks to read from all objects, starting from primary
-    // object to last extended object.
-    for (unsigned int i = 0; i < total_objects; i++) {
-      total_blocks_to_copy_all_objects +=
-          extended_objects[i].total_blocks_in_object;
-    }
-    // In order to read complete object, total number of objects to read
-    // is equal to total number of objects
-    total_objects_to_copy = total_objects;
-  } else {
-
-    unsigned int first_byte_object_index = 0,
-                 last_byte_object_index = total_objects - 1;
-    total_objects_to_copy = total_objects;
-    for (unsigned int i = 0; i < total_objects; i++) {
-      if (first_byte_offset_to_copy <
-          (extended_objects[i].start_offset_in_object +
-           extended_objects[i].object_size)) {
-        // Found first_byte_offset_to_copy in object at index i
-        first_byte_object_index = i;
-        break;
-      }
-    }
-    for (unsigned int j = first_byte_object_index; j < total_objects; j++) {
-      if (last_byte_offset_to_copy <
-          (extended_objects[j].start_offset_in_object +
-           extended_objects[j].object_size)) {
-        // Found last_byte_offset_to_copy in object at index i
-        last_byte_object_index = j;
-        break;
-      }
-    }
-    // Calculate the actual requested content in first object
-    // (first_byte_object_index) and last object (last_byte_object_index)
-    if (last_byte_object_index == first_byte_object_index) {
-      // If both first byte offset and last byte offset are in same object
-      extended_objects[first_byte_object_index].requested_object_size =
-          last_byte_offset_to_copy - first_byte_offset_to_copy + 1;
-    } else {
-      extended_objects[first_byte_object_index].requested_object_size =
-          (extended_objects[first_byte_object_index].object_size -
-           (first_byte_offset_to_copy -
-            extended_objects[first_byte_object_index].start_offset_in_object));
-
-      extended_objects[last_byte_object_index].requested_object_size =
-          last_byte_offset_to_copy -
-          (extended_objects[last_byte_object_index].start_offset_in_object);
-    }
-
-    // Get the block of first_byte_offset_to_copy from object at
-    // index first_byte_object_index
-    size_t unit_size_of_object_with_first_byte = 0,
-           unit_size_of_object_with_last_byte = 0;
-    unit_size_of_object_with_first_byte =
-        S3MotrLayoutMap::get_instance()->get_unit_size_for_layout(
-            extended_objects[first_byte_object_index].object_layout);
-    if (last_byte_object_index != first_byte_object_index) {
-      unit_size_of_object_with_last_byte =
-          S3MotrLayoutMap::get_instance()->get_unit_size_for_layout(
-              extended_objects[last_byte_object_index].object_layout);
-    } else {
-      // Both offsets belong to same object
-      unit_size_of_object_with_last_byte = unit_size_of_object_with_first_byte;
-    }
-
-    size_t first_byte_offset_block =
-        (first_byte_offset_to_copy -
-         extended_objects[first_byte_object_index].start_offset_in_object +
-         unit_size_of_object_with_first_byte) /
-        unit_size_of_object_with_first_byte;
-
-    // Get the block of last_byte_offset_to_copy from object at
-    // index 'last_byte_object_index'
-    size_t last_byte_offset_block =
-        (last_byte_offset_to_copy -
-         extended_objects[last_byte_object_index].start_offset_in_object +
-         unit_size_of_object_with_last_byte) /
-        unit_size_of_object_with_last_byte;
-
-    // Get total number blocks to read for a given valid range
-    for (unsigned int k = first_byte_object_index; k <= last_byte_object_index;
-         k++) {
-      // Calculate blocks in each object in the valid object range with offsets
-      if (k == first_byte_object_index) {
-        total_blocks_to_copy_all_objects +=
-            extended_objects[k].total_blocks_in_object -
-            first_byte_offset_block + 1;
-      } else if (k == last_byte_object_index) {
-        total_blocks_to_copy_all_objects += last_byte_offset_block;
-      } else {
-        total_blocks_to_copy_all_objects +=
-            extended_objects[k].total_blocks_in_object;
-      }
-    }
-    // Check if 'extended_objects' needs to be shrunk, due to specified byte
-    // range
-    bool need_to_shrink_front = false, need_to_shrink_end = false;
-    // First, check for first byte offset object
-    if (first_byte_object_index != 0 &&
-        first_byte_object_index < total_objects) {
-      // First byte to read is not in first object, so shrink the array of
-      // objects
-      need_to_shrink_front = true;
-    }
-    // Second, check for last byte offset object
-    if (last_byte_object_index != (total_objects - 1) &&
-        last_byte_object_index < total_objects) {
-      // Last byte to read is not in the last object, so shrink the array of
-      // objects
-      need_to_shrink_end = true;
-    }
-    std::vector<struct S3ExtendedObjectInfo> new_set_of_extended_objects;
-    if (need_to_shrink_front || need_to_shrink_end) {
-      if (need_to_shrink_front && need_to_shrink_end) {
-        std::copy(extended_objects.begin() + first_byte_object_index,
-                  (extended_objects.begin() + last_byte_object_index + 1),
-                  back_inserter(new_set_of_extended_objects));
-      } else if (need_to_shrink_front) {
-        // Shrink front only
-        std::copy(extended_objects.begin() + first_byte_object_index,
-                  extended_objects.end(),
-                  back_inserter(new_set_of_extended_objects));
-      } else {
-        // Shrink end only
-        std::copy(extended_objects.begin(),
-                  (extended_objects.begin() + last_byte_object_index + 1),
-                  back_inserter(new_set_of_extended_objects));
-      }
-      // Re-set the array of objects to read data from
-      extended_objects = new_set_of_extended_objects;
-      // Re-calculate total objects to read data from
-      total_objects_to_copy = extended_objects.size();
+  unsigned int first_byte_object_index = 0,
+               last_byte_object_index = total_objects - 1;
+  total_objects_to_copy = total_objects;
+  for (unsigned int i = 0; i < total_objects; i++) {
+    if (first_byte_offset_to_copy <
+        (extended_objects[i].start_offset_in_object +
+         extended_objects[i].object_size)) {
+      // Found first_byte_offset_to_copy in object at index i
+      first_byte_object_index = i;
+      break;
     }
   }
+  for (unsigned int j = first_byte_object_index; j < total_objects; j++) {
+    if (last_byte_offset_to_copy < (extended_objects[j].start_offset_in_object +
+                                    extended_objects[j].object_size)) {
+      // Found last_byte_offset_to_copy in object at index i
+      last_byte_object_index = j;
+      break;
+    }
+  }
+  // Calculate the actual requested content in first object
+  // (first_byte_object_index) and last object (last_byte_object_index)
+  if (last_byte_object_index == first_byte_object_index) {
+    // If both first byte offset and last byte offset are in same object
+    extended_objects[first_byte_object_index].requested_object_size =
+        last_byte_offset_to_copy - first_byte_offset_to_copy + 1;
+  } else {
+    extended_objects[first_byte_object_index].requested_object_size =
+        (extended_objects[first_byte_object_index].object_size -
+         (first_byte_offset_to_copy -
+          extended_objects[first_byte_object_index].start_offset_in_object));
+
+    extended_objects[last_byte_object_index].requested_object_size =
+        last_byte_offset_to_copy -
+        (extended_objects[last_byte_object_index].start_offset_in_object);
+  }
+
+  // Get the block of first_byte_offset_to_copy from object at
+  // index first_byte_object_index
+  size_t unit_size_of_object_with_first_byte = 0,
+         unit_size_of_object_with_last_byte = 0;
+  unit_size_of_object_with_first_byte =
+      S3MotrLayoutMap::get_instance()->get_unit_size_for_layout(
+          extended_objects[first_byte_object_index].object_layout);
+  if (last_byte_object_index != first_byte_object_index) {
+    unit_size_of_object_with_last_byte =
+        S3MotrLayoutMap::get_instance()->get_unit_size_for_layout(
+            extended_objects[last_byte_object_index].object_layout);
+  } else {
+    // Both offsets belong to same object
+    unit_size_of_object_with_last_byte = unit_size_of_object_with_first_byte;
+  }
+
+  size_t first_byte_offset_block =
+      (first_byte_offset_to_copy -
+       extended_objects[first_byte_object_index].start_offset_in_object +
+       unit_size_of_object_with_first_byte) /
+      unit_size_of_object_with_first_byte;
+
+  // Get the block of last_byte_offset_to_copy from object at
+  // index 'last_byte_object_index'
+  size_t last_byte_offset_block =
+      (last_byte_offset_to_copy -
+       extended_objects[last_byte_object_index].start_offset_in_object +
+       unit_size_of_object_with_last_byte) /
+      unit_size_of_object_with_last_byte;
+
+  // Get total number blocks to read for a given valid range
+  for (unsigned int k = first_byte_object_index; k <= last_byte_object_index;
+       k++) {
+    // Calculate blocks in each object in the valid object range with offsets
+    if (k == first_byte_object_index) {
+      total_blocks_to_copy_all_objects +=
+          extended_objects[k].total_blocks_in_object - first_byte_offset_block +
+          1;
+    } else if (k == last_byte_object_index) {
+      total_blocks_to_copy_all_objects += last_byte_offset_block;
+    } else {
+      total_blocks_to_copy_all_objects +=
+          extended_objects[k].total_blocks_in_object;
+    }
+  }
+  // Check if 'extended_objects' needs to be shrunk, due to specified byte
+  // range
+  bool need_to_shrink_front = false, need_to_shrink_end = false;
+  // First, check for first byte offset object
+  if (first_byte_object_index != 0 && first_byte_object_index < total_objects) {
+    // First byte to read is not in first object, so shrink the array of
+    // objects
+    need_to_shrink_front = true;
+  }
+  // Second, check for last byte offset object
+  if (last_byte_object_index != (total_objects - 1) &&
+      last_byte_object_index < total_objects) {
+    // Last byte to read is not in the last object, so shrink the array of
+    // objects
+    need_to_shrink_end = true;
+  }
+  std::vector<struct S3ExtendedObjectInfo> new_set_of_extended_objects;
+  std::vector<struct s3_part_frag_context> new_part_fragment_context_list;
+  if (need_to_shrink_front || need_to_shrink_end) {
+    if (need_to_shrink_front && need_to_shrink_end) {
+      std::copy(extended_objects.begin() + first_byte_object_index,
+                (extended_objects.begin() + last_byte_object_index + 1),
+                back_inserter(new_set_of_extended_objects));
+      std::copy(
+          part_fragment_context_list.begin() + first_byte_object_index,
+          (part_fragment_context_list.begin() + last_byte_object_index + 1),
+          back_inserter(new_part_fragment_context_list));
+    } else if (need_to_shrink_front) {
+      // Shrink front only
+      std::copy(extended_objects.begin() + first_byte_object_index,
+                extended_objects.end(),
+                back_inserter(new_set_of_extended_objects));
+      std::copy(part_fragment_context_list.begin() + first_byte_object_index,
+                part_fragment_context_list.end(),
+                back_inserter(new_part_fragment_context_list));
+    } else {
+      // Shrink end only
+      std::copy(extended_objects.begin(),
+                (extended_objects.begin() + last_byte_object_index + 1),
+                back_inserter(new_set_of_extended_objects));
+      std::copy(
+          part_fragment_context_list.begin(),
+          (part_fragment_context_list.begin() + last_byte_object_index + 1),
+          back_inserter(new_part_fragment_context_list));
+    }
+    // Re-set the array of objects to read data from
+    part_fragment_context_list = new_part_fragment_context_list;
+    extended_objects = new_set_of_extended_objects;
+    // Re-calculate total objects to read data from
+    total_objects_to_copy = extended_objects.size();
+  }
+
   s3_log(S3_LOG_DEBUG, request_id,
          "total_objects_to_copy: (%zu)\n,total_blocks_to_copy_across_objects: "
          "(%zu)\n",

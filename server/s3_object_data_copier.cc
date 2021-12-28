@@ -378,6 +378,7 @@ void S3ObjectDataCopier::copy(
 void S3ObjectDataCopier::copy_part_fragment_in_single_source(
     std::vector<struct s3_part_frag_context> fragment_context_list,
     std::vector<struct S3ExtendedObjectInfo> extended_objects,
+    size_t first_byte_offset_to_copy,
     std::function<bool(void)> check_shutdown_and_rollback,
     std::function<void(void)> on_success, std::function<void(void)> on_failure,
     bool is_range_copy) {
@@ -388,8 +389,10 @@ void S3ObjectDataCopier::copy_part_fragment_in_single_source(
   this->check_shutdown_and_rollback = std::move(check_shutdown_and_rollback);
   this->on_success = std::move(on_success);
   this->on_failure = std::move(on_failure);
+  extended_objects_list = extended_objects;
   part_fragment_context_list = fragment_context_list;
   copy_parts_fragment_in_single_source = true;
+  first_byte_offset = first_byte_offset_to_copy;
   set_next_part_context();
   read_data_block();
   s3_log(S3_LOG_INFO, request_id, "%s Exit\n", __func__);
@@ -412,11 +415,11 @@ void S3ObjectDataCopier::set_next_part_context(bool is_range_copy) {
     if (part_vector_index == 0) {
       size_t unit_size_of_object_with_first_byte =
           S3MotrLayoutMap::get_instance()->get_unit_size_for_layout(
-              extended_objects[part_vector_index].object_layout);
+              extended_objects_list[part_vector_index].object_layout);
 
       size_t first_byte_offset_block =
-          (first_byte_offset_to_read -
-           extended_objects[part_vector_index].start_offset_in_object +
+          (first_byte_offset -
+           extended_objects_list[part_vector_index].start_offset_in_object +
            unit_size_of_object_with_first_byte) /
           unit_size_of_object_with_first_byte;
 
@@ -424,7 +427,7 @@ void S3ObjectDataCopier::set_next_part_context(bool is_range_copy) {
           (first_byte_offset_block - 1) * unit_size_of_object_with_first_byte;
     }
     bytes_left_to_read =
-        extended_objects[part_vector_index].total_blocks_in_object;
+        extended_objects_list[part_vector_index].total_blocks_in_object;
   } else {
     bytes_left_to_read =
         part_fragment_context_list[part_vector_index].item_size;

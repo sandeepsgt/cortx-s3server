@@ -85,7 +85,11 @@ class S3PutMultipartCopyAction : public S3PutObjectActionBase {
   std::vector<struct S3ExtendedObjectInfo> extended_objects;
 
   size_t first_byte_offset_to_copy = 0;
+  size_t total_blocks_in_object = 0;
   size_t last_byte_offset_to_copy = 0;
+  size_t total_objects = 0;
+  size_t total_objects_to_copy = 0;
+  size_t total_blocks_to_copy_all_objects = 0;
   unsigned motr_write_payload_size;
   bool if_source_and_destination_same();
   S3Timer s3_timer;
